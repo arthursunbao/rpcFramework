@@ -2,6 +2,7 @@ package main.java.rpc.nio;
 
 import com.sun.org.apache.bcel.internal.generic.Select;
 import main.java.rpc.RpcObject;
+import main.java.rpc.network.AbstractRpcConnector;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -13,6 +14,7 @@ import java.nio.channels.ServerSocketChannel;
 import java.nio.channels.SocketChannel;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -30,7 +32,7 @@ public class SimpleRpcNioSelector extends AbstractRpcNioSelector {
     private List<RpcNioAcceptor> acceptors;
     private static final int READ_OP = SelectionKey.OP_READ;
     private static final int READ_WRITE_OP = SelectionKey.OP_READ || SelectionKey.OP_WRITE;
-    private LinkedList<Runnable> selectedTasks = new LinkedList<>();
+    private LinkedList<Runnable> selectTasks = new LinkedList<>();
 
     private AbstractRpcNioSelector delegageSelector;
 
@@ -186,5 +188,131 @@ public class SimpleRpcNioSelector extends AbstractRpcNioSelector {
         }
         return result;
     }
-//
+
+    private boolean doWrite(SelectionKey selectionKey){
+        boolean result = false;
+        SocketChannel channel = (SocketChannel)selectionKey.channel();
+        RpcNioConnector connector = connectorCache.get(channel);
+        if(connector.isNeedToSend()){
+            try{
+                RpcNioBuffer connectorWriteBuffer = connector.getRpcNioWriterBuffer();
+                ByteBuffer channelWriteBuffer = connector.getChannelWriteBuffer();
+                while(connector.isNeedToSend()){
+                    RpcObject rpc = connector.getToSend();
+                    connectorWriteBuffer.writeRpcObject(rpc);
+                    channelWriteBuffer.put(connectorWriteBuffer.readBytes());
+                    channelWriteBuffer.flip();
+                    int wantWrite = channelWriteBuffer.limit()-channelWriteBuffer.position();
+                    int write = 0;
+                    while(write < wantWrite){
+                        write += channel.write(channelWriteBuffer);
+                    }
+                    channelWriteBuffer.clear();
+                    result = true;
+                }
+                if(!connector.isNeedToSend()){
+                    selectionKey.interestOps(READ_OP);
+                }
+            }catch (Exception e){
+                e.printStackTrace();
+            }
+
+
+        }
+
+        return result;
+
+    }
+
+    private boolean doDispatchSelectionKey(SelectionKey selectionKey){
+        boolean result = false;
+        try{
+            if(selectionKey.isAcceptable()){
+                result = doAccept(selectionKey)
+            }
+            if(selectionKey.isReadable()){
+                result = doRead(selectionKey);
+            }
+            if(selectionKey.isWritable()){
+                result = doWrite(selectionKey);
+            }
+        }
+        catch(Exception e){
+            e.printStackTrace();
+        }
+        return result;
+    }
+
+private class SelectionThread extends Thread {
+    @Override
+    public void run() {
+        logger.info("select thread has started :"+Thread.currentThread().getId());
+        while (!stop) {
+            if(SimpleRpcNioSelector.this.hasTask()){
+                SimpleRpcNioSelector.this.runSelectTasks();
+            }
+            boolean needSend = checkSend();
+            try {
+                if (needSend) {
+                    selector.selectNow();
+                } else {
+                    selector.select();
+                }
+            } catch (IOException e) {
+                SimpleRpcNioSelector.this.handleNetException(e);
+            }
+            Set<SelectionKey> selectionKeys = selector.selectedKeys();
+            for (SelectionKey selectionKey : selectionKeys) {
+                doDispatchSelectionKey(selectionKey);
+            }
+        }
+    }
+}
+
+    private boolean checkSend(){
+        boolean needSend = false;
+        for(RpcNioConnector connector:connectors){
+            if(connector.isNeedToSend()){
+                SelectionKey selectionKey = connector.getChannel().keyFor(selector);
+                selectionKey.interestOps(READ_WRITE_OP);
+                needSend = true;
+            }
+        }
+        return needSend;
+    }
+
+    @Override
+    public void notifySend(AbstractRpcConnector connector) {
+        selector.wakeup();
+    }
+
+    private void addSelectTask(Runnable task){
+        selectTask.offer(task);
+    }
+
+    private boolean hasTask(){
+        Runnable peek = selectTasks.peek();
+        return peek!=null;
+    }
+
+    private void runSelectTasks(){
+        Runnable peek = selectTasks.peek();
+        while(peek!=null){
+            peek = selectTasks.pop();
+            peek.run();
+            peek = selectTasks.peek();
+        }
+    }
+
+    public void setDelegageSelector(AbstractRpcNioSelector delegageSelector) {
+        this.delegageSelector = delegageSelector;
+    }
+
+    @Override
+    public void handleNetException(Exception e) {
+
+    }
+
+
+
 }
