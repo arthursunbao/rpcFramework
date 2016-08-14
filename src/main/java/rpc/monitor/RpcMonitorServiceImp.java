@@ -1,7 +1,7 @@
 package main.java.rpc.monitor;
-
+import main.java.rpc.RpcService
 import main.java.rpc.RpcServiceBean;
-
+import main.java.rpc.server.RpcServicesHolder;
 import java.util.*;
 
 /**
@@ -9,14 +9,14 @@ import java.util.*;
  */
 public class RpcMonitorServiceImp implements RpcMonitorService {
 
-    private RpcServicesHolder rpcServiceHolder;
+    private RpcServicesHolder rpcServicesHolder;
 
     private StatMonitor statMonitor;
 
     private long time = 0;
 
     public RpcMonitorServiceImp(RpcServicesHolder rpcServiceHolder, StatMonitor statMonitor){
-        this.rpcServiceHolder = rpcServiceHolder;
+        this.rpcServicesHolder = rpcServiceHolder;
         time = System.currentTimeMillis();
     }
 
