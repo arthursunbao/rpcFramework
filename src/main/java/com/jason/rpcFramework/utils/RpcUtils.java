@@ -3,12 +3,22 @@ package com.jason.rpcFramework.utils;
 
 
 import com.jason.rpcFramework.Exception.RpcException;
+import com.jason.rpcFramework.Exception.RpcExceptionHandler;
 import com.jason.rpcFramework.Exception.RpcNetExceptionHandler;
+import com.jason.rpcFramework.RemoteCall;
 import com.jason.rpcFramework.RpcObject;
+import com.jason.rpcFramework.network.AbstractRpcConnector;
+import com.jason.rpcFramework.nio.AbstractRpcNioSelector;
+import com.jason.rpcFramework.nio.RpcNioAcceptor;
+import com.jason.rpcFramework.nio.SimpleRpcNioSelector;
+import com.jason.rpcFramework.oio.AbstractRpcOioWriter;
 import javafx.scene.chart.PieChart;
 import org.apache.log4j.Logger;
 
 import java.io.*;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -230,9 +240,167 @@ public class RpcUtils {
         }
     }
 
+    public static List<Field> getFields(Class classz){
+        Field[] fields = classz.getDeclaredFields();
+        ArrayList<Field> fs = new ArrayList<Field>();
+        for(Field field : fields){
+            fs.add(field);
+        }
+        Class superclass = classz.getSuperclass();
+        if(superclass != null && superclass != Object.class){
+            fs.addAll(getFields(superclass));
+        }
+        return fs;
+    }
+
+    public static Object invokeMethod(Object obj, String methodName, Object[] args, RpcExceptionHandler exceptionHandler){
+        Class<? extends Object> classz = obj.getClass();
+        String key = classz.getCanonicalName() + "." + methodName;
+        Method method = methodCache.get(key);
+        if(method == null){
+            method = RpcUtils.findMethod(classz, methodName, args);
+            if(method == null){
+                throw new RpcException("method does not exist" + methodName);
+            }
+            methodCache.put(key, method);
+        }
+        return RpcUtils.invokeMethod(method, obj, args, exceptionHandler);
+    }
+
+    public static Object invoke(Method method, Object obj, Object[] args, RpcExceptionHandler exceptionHandler){
+        try{
+            return method.invoke(obj, args);
+        }
+        catch(IllegalAccessException e){
+            throw new RpcException("Illegal Access Request Exception");
+        }
+        catch(IllegalArgumentException e){
+            throw new RpcException("Illegal Argument Exception");
+        }
+        catch(InvocationTargetException e){
+            if(e.getCause()!=null){
+                exceptionHandler.handleException(null, null, e.getCause());
+            }else{
+                exceptionHandler.handleException(null, null, e);
+            }
+            throw new RpcException("rpc invoke target error");
+        }
+    }
+
+    public static void handleException(RpcExceptionHandler rpcExceptionHandler, RpcObject rpc, RemoteCall call, Exception e){
+        if(rpcExceptionHandler != null){
+            rpcExceptionHandler.handleException(rpc, call, e);
+        }
+        else{
+            logger.error("exceptionHandler null exception message" + e.getMessage());
+        }
+    }
+
+    public static long getNowInmilliseconds() {
+        return new Date().getTime();
+    }
+
+    public static byte[] intToBytes(int iSource) {
+        byte[] bLocalArr = new byte[4];
+        for (int i=0;i<bLocalArr.length; i++) {
+            bLocalArr[i] = (byte) (iSource >> 8*(3-i) & 0xFF);
+        }
+        return bLocalArr;
+    }
+
+    public static int bytesToInt(byte[] bRefArr) {
+        int iOutcome = 0;
+        byte bLoop;
+        for (int i=0; i<bRefArr.length; i++) {
+            bLoop = bRefArr[i];
+            iOutcome += (bLoop & 0xFF) << (8 * (3-i));
+        }
+        return iOutcome;
+    }
+
+    public static byte[] longToBytes(long number) {
+        long temp = number;
+        byte[] b = new byte[8];
+        for (int i = 7; i>-1; i--) {
+            b[i] = new Long(temp & 0xff).byteValue();
+            temp = temp >> 8;
+        }
+        return b;
+    }
+
+    public static long bytesToLong(byte[] b) {
+        long s = 0;
+        long s0 = b[0] & 0xff;
+        long s1 = b[1] & 0xff;
+        long s2 = b[2] & 0xff;
+        long s3 = b[3] & 0xff;
+        long s4 = b[4] & 0xff;
+        long s5 = b[5] & 0xff;
+        long s6 = b[6] & 0xff;
+        long s7 = b[7] & 0xff;
+        s6 <<= 8;
+        s5 <<= 16;
+        s4 <<= 24;
+        s3 <<= 8 * 4;
+        s2 <<= 8 * 5;
+        s1 <<= 8 * 6;
+        s0 <<= 8 * 7;
+        s = s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7;
+        return s;
+    }
+
+    public static AbstractRpcConnector createRpcConnector(AbstractRpcNioSelector nioSelector,
+                                                          AbstractRpcOioWriter writer, Class<? extends AbstractRpcConnector> connectorClass) {
+        try {
+            if (connectorClass == RpcNioAcceptor.class) {
+                Constructor<? extends AbstractRpcConnector> constructor = connectorClass.getConstructor(AbstractRpcNioSelector.class);
+                return constructor.newInstance(nioSelector);
+            }
+            else if (connectorClass == RpcOioConnector.class) {
+                Constructor<? extends AbstractRpcConnector> constructor = connectorClass.getConstructor(AbstractRpcOioWriter.class);
+                return constructor.newInstance(writer);
+            }
+            else {
+                return connectorClass.newInstance();
+            }
+        }
+        catch(Exception e){
+            throw new RpcException(e);
+        }
+    }
 
 
 
+
+    public static AbstractRpcConnector createConnector(Class connectorClass){
+        SimpleRpcNioSelector nioSelector = new SimpleRpcNioSelector();
+        SimpleRpcOioWriter writer = new SimpleRpcOioWriter();
+        if(connectorClass == null){
+            connectorClass = RpcNioAcceptor.class;
+        }
+        return RpcUtils.createRpcConnector(nioSelector,writer,connectorClass);
+    }
+
+    public static Method findMethod(Class clazz, String name, Object[] args) {
+        Method[] methods = clazz.getMethods();
+        for (Method m : methods) {
+            if (m.getName().equals(name)) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    public static long getNowMinute(){
+        return getMinute(new Date());
+    }
+
+    public static long getMinute(Date date){
+        GregorianCalendar calendar = new GregorianCalendar(1900+date.getYear(),date.getMonth(),date.getDay(),date.getHours(),date.getMinutes());
+        return calendar.getTimeInMillis();
+    }
+
+    public static final long MINUTE = 60*1000;
 
     public enum RpcType{
         ONEWAY(1), INVOKE(2), SUC(3), FAIL(4);
@@ -254,9 +422,6 @@ public class RpcUtils {
                 }
             }
             return ONEWAY;
-
-
-
         }
 
     }
